@@ -1,71 +1,57 @@
 import rclpy
 from rclpy.node import Node
-
 import numpy as np
 from sensor_msgs.msg import LaserScan
-from ackermann_msgs.msg import AckermannDriveStamped, AckermannDrive
+from ackermann_msgs.msg import AckermannDriveStamped
 
 class ReactiveFollowGap(Node):
-    """ 
-    Implement Wall Following on the car
-    This is just a template, you are free to implement your own node!
-    """
     def __init__(self):
         super().__init__('reactive_node')
-        # Topics & Subs, Pubs
-        lidarscan_topic = '/scan'
-        drive_topic = '/drive'
-
-        # TODO: Subscribe to LIDAR
-        # TODO: Publish to drive
+        self.lidar_sub = self.create_subscription(LaserScan, '/scan', self.lidar_callback, 10)
+        self.drive_pub = self.create_publisher(AckermannDriveStamped, '/drive', 10)
+        self.BUBBLE_RADIUS = 0.5
+        self.MAX_SPEED = 1.5
+        self.MIN_SPEED = 0.5
+        self.SAFE_DISTANCE = 1.0
 
     def preprocess_lidar(self, ranges):
-        """ Preprocess the LiDAR scan array. Expert implementation includes:
-            1.Setting each value to the mean over some window
-            2.Rejecting high values (eg. > 3m)
-        """
-        proc_ranges = ranges
-        return proc_ranges
+        proc = np.array(ranges)
+        proc[np.isinf(proc)] = 3.5
+        return np.convolve(proc, np.ones(5)/5, mode='same')
 
-    def find_max_gap(self, free_space_ranges):
-        """ Return the start index & end index of the max gap in free_space_ranges
-        """
-        return None
-    
-    def find_best_point(self, start_i, end_i, ranges):
-        """Start_i & end_i are start and end indicies of max-gap range, respectively
-        Return index of best point in ranges
-	    Naive: Choose the furthest point within ranges and go there
-        """
-        return None
+    def find_max_gap(self, ranges):
+        mask = ranges > 0
+        gaps, start = [], None
+        for i, val in enumerate(mask):
+            if val and start is None: start = i
+            elif not val and start is not None: gaps.append((start, i-1)); start=None
+        if start is not None: gaps.append((start, len(mask)-1))
+        return max(gaps, key=lambda x: x[1]-x[0])
+
+    def find_best_point(self, start, end, ranges):
+        return np.argmax(ranges[start:end+1]) + start
 
     def lidar_callback(self, data):
-        """ Process each LiDAR scan as per the Follow Gap algorithm & publish an AckermannDriveStamped Message
-        """
-        ranges = data.ranges
-        proc_ranges = self.preprocess_lidar(ranges)
-        
-        # TODO:
-        #Find closest point to LiDAR
-
-        #Eliminate all points inside 'bubble' (set them to zero) 
-
-        #Find max length gap 
-
-        #Find the best point in the gap 
-
-        #Publish Drive message
-
+        proc = self.preprocess_lidar(data.ranges)
+        closest = np.argmin(proc)
+        start = max(0, closest - int(self.BUBBLE_RADIUS/data.angle_increment))
+        end = min(len(proc)-1, closest + int(self.BUBBLE_RADIUS/data.angle_increment))
+        proc[start:end+1] = 0
+        s, e = self.find_max_gap(proc)
+        best = self.find_best_point(s, e, proc)
+        angle = data.angle_min + best * data.angle_increment
+        speed = self.MIN_SPEED if np.min(proc) < self.SAFE_DISTANCE else self.MAX_SPEED
+        msg = AckermannDriveStamped()
+        msg.drive.steering_angle = angle
+        msg.drive.speed = speed
+        self.drive_pub.publish(msg)
 
 def main(args=None):
     rclpy.init(args=args)
-    print("WallFollow Initialized")
-    reactive_node = ReactiveFollowGap()
-    rclpy.spin(reactive_node)
-
-    reactive_node.destroy_node()
+    node = ReactiveFollowGap()
+    rclpy.spin(node)
+    node.destroy_node()
     rclpy.shutdown()
-
 
 if __name__ == '__main__':
     main()
